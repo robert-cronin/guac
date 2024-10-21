@@ -71,6 +71,8 @@ const (
 	DocumentOpenVEX            DocumentType = "OPEN_VEX"
 	DocumentIngestPredicates   DocumentType = "INGEST_PREDICATES"
 	DocumentUnknown            DocumentType = "UNKNOWN"
+	// End of life
+	DocumentEOL DocumentType = "EOL"
 )
 
 // FormatType describes the document format for malform checks
