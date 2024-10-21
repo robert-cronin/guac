@@ -560,3 +560,24 @@ var P7 = &model.PkgInputSpec{
 		Value: "https://alternative.report.url/",
 	}},
 }
+
+
+// ITE6EOLNodejs is a test document for the EOL ingestor
+var ITE6EOLNodejs = []byte(`{
+	"cycle": "14",
+	"version": "14.17.0",
+	"isEOL": true,
+	"eolDate": "2023-04-30",
+	"lts": true,
+	"latest": "14.21.3"
+}`)
+
+// ITE6EOLPython is a test document for the EOL ingestor
+var ITE6EOLPython = []byte(`{
+	"cycle": "3.9",
+	"version": "3.9.5",
+	"isEOL": false,
+	"eolDate": "2025-10-05",
+	"lts": false,
+	"latest": "3.9.16"
+}`)
