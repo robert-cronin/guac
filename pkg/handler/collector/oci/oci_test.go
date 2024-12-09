@@ -415,6 +415,178 @@ func Test_ociCollector_RetrieveArtifacts(t *testing.T) {
 	}
 }
 
+func Test_ociCollector_AzureOSS(t *testing.T) {
+	ctx := context.Background()
+	type fields struct {
+		ociValues []string
+		poll      bool
+		interval  time.Duration
+	}
+
+	tests := []struct {
+		name       string
+		fields     fields
+		wantErr    bool
+		errMessage error
+		want       []*processor.Document
+	}{
+		// {
+		// 	name: "multi-platform sbom",
+		// 	fields: fields{
+		// 		ociValues: []string{
+		// 			"upstream.azurecr.io/oss/kubernetes/ingress/nginx-ingress-controller:v1.9.3-1",
+		// 		},
+		// 		poll:     false,
+		// 		interval: 0,
+		// 	},
+		// 	want: []*processor.Document{
+		// 		{
+		// 			Blob:   nil,
+		// 			Type:   processor.DocumentSPDX,
+		// 			Format: processor.FormatJSON,
+		// 			SourceInformation: processor.SourceInformation{
+		// 				Collector: string(OCICollector),
+		// 				Source:    "upstream.azurecr.io/oss/kubernetes/ingress/nginx-ingress-controller@sha256:4c6bbdb6e06f38efe1964a96bad9dc1a19c6d72e0befc7a1cca1dc4e687a7cc2",
+		// 			},
+		// 		},
+		// 		{
+		// 			Blob:   nil,
+		// 			Type:   processor.DocumentSPDX,
+		// 			Format: processor.FormatJSON,
+		// 			SourceInformation: processor.SourceInformation{
+		// 				Collector: string(OCICollector),
+		// 				Source:    "upstream.azurecr.io/oss/kubernetes/ingress/nginx-ingress-controller@sha256:8d379ee4d35f488750ec22559537503100d5326d6f710ba8f81b47aa0c17b5a4",
+		// 			},
+		// 		},
+		// 		{
+		// 			Blob:   nil,
+		// 			Type:   processor.DocumentSPDX,
+		// 			Format: processor.FormatJSON,
+		// 			SourceInformation: processor.SourceInformation{
+		// 				Collector: string(OCICollector),
+		// 				Source:    "upstream.azurecr.io/oss/kubernetes/ingress/nginx-ingress-controller@sha256:d5f022c1e91011f03b28ecaec5bead551888bb94a3fe7bea4c9c83622eece1a2",
+		// 			},
+		// 		},
+		// 		{
+		// 			Blob:   nil,
+		// 			Type:   processor.DocumentSPDX,
+		// 			Format: processor.FormatJSON,
+		// 			SourceInformation: processor.SourceInformation{
+		// 				Collector: string(OCICollector),
+		// 				Source:    "upstream.azurecr.io/oss/kubernetes/ingress/nginx-ingress-controller@sha256:251e2c37da4cb53f1c227e1f2d1752b1b66d2d7db686b1b26078cbee4daee591",
+		// 			},
+		// 		},
+		// 	},
+		// 	wantErr: false,
+		// },
+		// {
+		// 	name: "azure oss hello world",
+		// 	fields: fields{
+		// 		ociValues: []string{
+		// 			"upstream.azurecr.io/oss/v2/test/hello-world:v1.0.1-24",
+		// 		},
+		// 		poll:     false,
+		// 		interval: 0,
+		// 	},
+		// 	want:    []*processor.Document{},
+		// 	wantErr: false,
+		// },
+		{
+			name: "azure oss spdx ingest test",
+			fields: fields{
+				ociValues: []string{
+					// amd64 of tag: https://oci.dag.dev/?image=upstream.azurecr.io%2Foss%2Fkubernetes%2Fingress%2Fnginx-ingress-controller:v1.11.3
+					"upstream.azurecr.io/oss/kubernetes/ingress/nginx-ingress-controller@sha256:3b629f29e78f53f0f94cd9ca3ec40ad0dcefa49b47d77ddca8779db44737a6c9",
+				},
+				poll:     false,
+				interval: 0,
+			},
+			want: []*processor.Document{
+				{
+					Blob:   nil,
+					Type:   processor.DocumentSPDX,
+					Format: processor.FormatJSON,
+					SourceInformation: processor.SourceInformation{
+						Collector: string(OCICollector),
+						Source:    "upstream.azurecr.io/oss/kubernetes/ingress/nginx-ingress-controller@sha256:8967af956667f68c12feae00fadf354e69c1b15cf3d97ed7c18b2617b63bba25",
+					},
+				},
+				{
+					Blob:   nil,
+					Type:   processor.DocumentITE6SLSA,
+					Format: processor.FormatJSON,
+					SourceInformation: processor.SourceInformation{
+						Collector: string(OCICollector),
+						Source:    "upstream.azurecr.io/oss/kubernetes/ingress/nginx-ingress-controller@sha256:8967af956667f68c12feae00fadf354e69c1b15cf3d97ed7c18b2617b63bba25",
+					},
+				},
+			},
+			wantErr: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := NewOCICollector(ctx, toDataSource(tt.fields.ociValues), tt.fields.poll, tt.fields.interval)
+
+			var cancel context.CancelFunc
+			if tt.fields.poll {
+				ctx, cancel = context.WithTimeout(ctx, 10*time.Second)
+				defer cancel()
+			}
+
+			collector.DeregisterDocumentCollector(OCICollector)
+			if err := collector.RegisterDocumentCollector(g, OCICollector); err != nil &&
+				!errors.Is(err, collector.ErrCollectorOverwrite) {
+				t.Fatalf("could not register collector: %v", err)
+			}
+
+			var collectedDocs []*processor.Document
+			em := func(d *processor.Document) error {
+				collectedDocs = append(collectedDocs, d)
+				return nil
+			}
+			eh := func(err error) bool {
+				if err != nil {
+					if !tt.wantErr {
+						t.Errorf("g.RetrieveArtifacts() error = %v, wantErr %v", err, tt.wantErr)
+					} else if !strings.Contains(err.Error(), tt.errMessage.Error()) {
+						t.Errorf("g.RetrieveArtifacts() error = %v, wantErr %v", err, tt.errMessage)
+					}
+				}
+				return true
+			}
+
+			if err := collector.Collect(ctx, em, eh); err != nil {
+				t.Fatalf("Collector error handler error: %v", err)
+			}
+
+			for i := range tt.want {
+				collectedDoc := findDocumentBySource(collectedDocs, tt.want[i].SourceInformation.Source)
+				if collectedDoc == nil {
+					t.Fatalf("g.RetrieveArtifacts() = %v, want %v", nil, tt.want[i])
+					return // Do this so that linter passes
+				}
+
+				// tt.want[i].SourceInformation.DocumentRef = actualDocRef(collectedDoc.Blob)
+
+				// result := dochelper.DocTreeEqual(dochelper.DocNode(collectedDoc), dochelper.DocNode(tt.want[i]))
+				// if !result {
+				// 	t.Errorf("g.RetrieveArtifacts() = %v, want %v", string(collectedDocs[i].Blob), string(tt.want[i].Blob))
+				// }
+			}
+
+			if len(collectedDocs) != len(tt.want) {
+				t.Fatalf("g.RetrieveArtifacts() = %v, want %v", len(collectedDocs), len(tt.want))
+			}
+
+			if g.Type() != OCICollector {
+				t.Errorf("g.Type() = %s, want %s", g.Type(), OCICollector)
+			}
+
+		})
+	}
+}
+
 // findDocumentBySource returns the document with the given source
 func findDocumentBySource(docs []*processor.Document, source string) *processor.Document {
 	for _, d := range docs {
