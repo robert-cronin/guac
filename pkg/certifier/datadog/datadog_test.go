@@ -155,9 +155,9 @@ func TestDataDogCertifier_CertifyComponent(t *testing.T) {
 					// Verify predicate content
 					assert.Equal(t, DataDogCollector, certifyBad.CertifyBad.Collector)
 					assert.Equal(t, "DataDog Malicious Software Packages Dataset", certifyBad.CertifyBad.Origin)
-					assert.Equal(t, generated.PkgMatchTypeAllVersions, certifyBad.PkgMatchFlag.Pkg)
+					assert.Equal(t, generated.PkgMatchTypeSpecificVersion, certifyBad.PkgMatchFlag.Pkg)
 					assert.NotEmpty(t, certifyBad.CertifyBad.Justification)
-					assert.True(t, strings.Contains(certifyBad.CertifyBad.Justification, "Affected versions:"))
+					assert.Contains(t, certifyBad.CertifyBad.Justification, "Malicious version:")
 					assert.NotNil(t, certifyBad.CertifyBad.KnownSince)
 				}
 

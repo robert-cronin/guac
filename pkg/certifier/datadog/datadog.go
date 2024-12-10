@@ -31,8 +31,8 @@ import (
 	"github.com/guacsec/guac/pkg/certifier/components/root_package"
 	"github.com/guacsec/guac/pkg/clients"
 	"github.com/guacsec/guac/pkg/handler/processor"
+	"github.com/guacsec/guac/pkg/logging"
 	"github.com/guacsec/guac/pkg/version"
-
 	jsoniter "github.com/json-iterator/go"
 	"golang.org/x/time/rate"
 )
@@ -44,16 +44,19 @@ var (
 )
 
 const (
-	NPM_MANIFEST_URL  string = "https://raw.githubusercontent.com/DataDog/malicious-software-packages-dataset/main/samples/npm/manifest.json"
-	PYPI_MANIFEST_URL string = "https://raw.githubusercontent.com/DataDog/malicious-software-packages-dataset/main/samples/pypi/manifest.json"
-	VERSION           string = "0.0.1"
-	PRODUCER_ID       string = "guacsec/guac"
-	DataDogCollector  string = "datadog_certifier"
+	NPM_MANIFEST_URL         string = "https://raw.githubusercontent.com/DataDog/malicious-software-packages-dataset/main/samples/npm/manifest.json"
+	PYPI_MANIFEST_URL        string = "https://raw.githubusercontent.com/DataDog/malicious-software-packages-dataset/main/samples/pypi/manifest.json"
+	VERSION                  string = "0.0.1"
+	PRODUCER_ID              string = "guacsec/guac"
+	DataDogCollector         string = "datadog_certifier"
+	maxJustificationVersions        = 10 // Limit the number of versions in the justification message
 )
 
 var ErrDataDogComponentTypeMismatch error = errors.New("rootComponent type is not []*root_package.PackageNode")
 
 type MaliciousPackages map[string][]string
+
+type assemblerFuncType func([]assembler.IngestPredicates) (*ingestor.AssemblerIngestedIDs, error)
 
 type datadogCertifier struct {
 	httpClient    *http.Client
@@ -62,8 +65,7 @@ type datadogCertifier struct {
 	assemblerFunc assemblerFuncType
 }
 
-type assemblerFuncType func([]assembler.IngestPredicates) (*ingestor.AssemblerIngestedIDs, error)
-
+// CertifierOption defines functional options for the certifier
 type CertifierOption func(*datadogCertifier)
 
 // WithHTTPClient allows overriding the default HTTP client
@@ -120,7 +122,8 @@ func (d *datadogCertifier) fetchManifests() error {
 	return nil
 }
 
-func (d *datadogCertifier) CertifyComponent(ctx context.Context, rootComponent interface{}, _ chan<- *processor.Document) error {
+func (d *datadogCertifier) CertifyComponent(ctx context.Context, rootComponent interface{}, docChannel chan<- *processor.Document) error {
+	logger := logging.FromContext(ctx)
 	packageNodes, ok := rootComponent.([]*root_package.PackageNode)
 	if !ok {
 		return ErrDataDogComponentTypeMismatch
@@ -130,43 +133,66 @@ func (d *datadogCertifier) CertifyComponent(ctx context.Context, rootComponent i
 	currentTime := time.Now().UTC()
 
 	for _, node := range packageNodes {
-		purl := node.
-
-		// Skip packages that aren't npm or pypi
-		if !strings.HasPrefix(purl, "pkg:npm/") && !strings.HasPrefix(purl, "pkg:pypi/") {
-			continue
-		}
+		purl := node.Purl
 
 		pkgInput, err := helpers.PurlToPkg(purl)
 		if err != nil {
-			return fmt.Errorf("failed to parse PURL %s: %w", purl, err)
-		}
-
-		var versions []string
-		if strings.HasPrefix(purl, "pkg:npm/") {
-			fullName := pkgInput.Name
-			if pkgInput.Namespace != nil && *pkgInput.Namespace != "" {
-				// Create the package name in npm format, handling URL encoding
-				namespace := strings.TrimPrefix(*pkgInput.Namespace, "@")
-				if strings.HasPrefix(*pkgInput.Namespace, "%40") {
-					namespace = strings.TrimPrefix(*pkgInput.Namespace, "%40")
-				}
-				fullName = "@" + namespace + "/" + pkgInput.Name
-			}
-			versions = d.npmData[fullName]
-		} else {
-			versions = d.pypiData[pkgInput.Name]
-		}
-
-		if len(versions) == 0 {
+			logger.Debugf("failed to parse purl '%s' into package: %v", purl, err)
 			continue
 		}
 
+		// determine which dataset to check based on package type
+		var maliciousVersions []string
+		switch pkgInput.Type {
+		case "npm":
+			fullName := pkgInput.Name
+			if pkgInput.Namespace != nil && *pkgInput.Namespace != "" {
+				namespace := strings.TrimPrefix(*pkgInput.Namespace, "@")
+				namespace = strings.TrimPrefix(namespace, "%40")
+				fullName = "@" + namespace + "/" + pkgInput.Name
+			}
+			v, found := d.npmData[fullName]
+			if !found {
+				continue
+			}
+			maliciousVersions = v
+		case "pypi":
+			v, found := d.pypiData[pkgInput.Name]
+			if !found {
+				continue
+			}
+			maliciousVersions = v
+		default:
+			logger.Debugf("Skipping package %s, not npm or pypi", purl)
+			continue
+		}
+
+		// if no versions specified in dataset, skip
+		if len(maliciousVersions) == 0 {
+			// package known but no malicious versions listed?
+			continue
+		}
+
+		// certify only if the package has a specified version and that exact version is known malicious
+		if pkgInput.Version == nil {
+			logger.Debugf("Package %s has no version specified, skipping...", purl)
+			continue
+		}
+
+		versionToCheck := *pkgInput.Version
+		if !containsVersion(maliciousVersions, versionToCheck) {
+			// the requested package version is not in the malicious list
+			logger.Debugf("Package %s version %s not found in malicious dataset", purl, versionToCheck)
+			continue
+		}
+
+		// this exact version is known to be malicious
+		justification := fmt.Sprintf("Package version found in DataDog's malicious software packages dataset. Malicious version: %s", versionToCheck)
 		certifyBad := &assembler.CertifyBadIngest{
 			Pkg:          pkgInput,
-			PkgMatchFlag: generated.MatchFlags{Pkg: generated.PkgMatchTypeAllVersions},
+			PkgMatchFlag: generated.MatchFlags{Pkg: generated.PkgMatchTypeSpecificVersion},
 			CertifyBad: &generated.CertifyBadInputSpec{
-				Justification: fmt.Sprintf("Package found in DataDog's malicious software packages dataset. Affected versions: %v", versions),
+				Justification: justification,
 				Origin:        "DataDog Malicious Software Packages Dataset",
 				Collector:     DataDogCollector,
 				KnownSince:    currentTime,
@@ -183,4 +209,14 @@ func (d *datadogCertifier) CertifyComponent(ctx context.Context, rootComponent i
 	}
 
 	return nil
+}
+
+// containsVersion checks if a given version string is in the malicious versions list
+func containsVersion(maliciousVersions []string, versionToCheck string) bool {
+	for _, v := range maliciousVersions {
+		if v == versionToCheck {
+			return true
+		}
+	}
+	return false
 }
